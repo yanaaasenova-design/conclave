@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="bg"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CONCLAVE</title>
+<style>
+body{margin:0;background:#120e10;color:#f1e8d7;font:16px Georgia,serif}main{max-width:850px;margin:35px auto;padding:18px}
+h1,h2{color:#c7a66a;letter-spacing:.15em}h1{text-align:center;font-size:48px}
+section{background:#21181c;border:1px solid #684b43;border-radius:12px;padding:20px;margin:16px 0}
+input,textarea,select{display:block;width:100%;box-sizing:border-box;background:#100d0e;color:#fff0df;border:1px solid #72564c;border-radius:7px;padding:12px;margin:8px 0 14px;font:16px Georgia}
+button{background:#7f2634;color:white;border:1px solid #bd7777;border-radius:7px;padding:11px 16px;margin:5px;cursor:pointer}
+button:disabled{opacity:.4}#messages,#archive{height:330px;overflow:auto;background:#100d0e;padding:12px;border:1px solid #59413b;border-radius:8px}
+.msg{border-bottom:1px solid #493337;padding:9px}.meta{color:#c7a66a;font:12px Arial;display:flex;justify-content:space-between}.hidden{display:none!important}.status{color:#c7a66a;padding:10px}
+</style>
+<main><h1>CONCLAVE</h1><p style="text-align:center;color:#b9aa98">THE TRAITORS • PRIVATE ROOM</p>
+<section id="login"><h2>Вход</h2><label>Име</label><input id="name" maxlength="32"><label>Код за достъп</label><input id="code" type="password"><button id="enter">Влез</button><div id="err" class="status"></div></section>
+<div id="app" class="hidden">
+<div class="status" id="identity"></div><div class="status" id="phase">Фаза: ден</div>
+<section><h2>Таен разговор</h2><div id="messages"></div><textarea id="message" placeholder="Напиши съобщение"></textarea><button id="send">Изпрати</button></section>
+<section><h2>Нощен избор</h2><div id="voting" class="hidden"><select id="target"></select><button id="cast">Подай / промени гласа</button></div><div id="voteStatus" class="status">Гласуването не е активно.</div>
+<div id="host" class="hidden"><h2>Панел на водещата</h2><button id="night">Започни нощ</button><button id="day">Приключи нощ</button><div id="results" class="status"></div></div></section>
+<section><h2>Финална прожекция</h2><button id="showArchive">Отвори архив за телевизора</button></section></div>
+<section id="presentation" class="hidden"><h2>CONCLAVE — Архив</h2><div id="archive"></div><button id="back">Назад</button></section></main>
+<script type="module">
+import {createClient} from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+const URL='https://vdvhjnrwambgajvwqpji.supabase.co';
+const KEY='sb_publishable_prymMO26Sg2uLI8_VMAIog_IjnVFLGB';
+const $=id=>document.getElementById(id), esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let db,name,host=false,phase='day',nightNo=0,timer;
+const toggle=(id,v)=>$(id).classList.toggle('hidden',!v);
+const time=s=>new Date(s).toLocaleString('bg-BG',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+async function enter(){
+ name=$('name').value.trim();const code=$('code').value.trim();
+ if(!name||!code){$('err').textContent='Попълни името и кода.';return}
+ db=createClient(URL,KEY,{global:{headers:{'x-conclave-code':code}}});
+ try{
+  const h=await db.rpc('conclave_is_host');if(h.error)throw h.error;host=h.data===true;
+  const m=await db.from('conclave_members').insert({display_name:name});if(m.error)throw m.error;
+  toggle('login',false);toggle('app',true);toggle('host',host);$('identity').textContent=host?'Водеща: '+name:'Участник: '+name;
+  await refresh();timer=setInterval(refresh,2500);
+ }catch(e){$('err').textContent='Входът не бе успешен. Провери кода и опитай отново.'}
+}
+async function refresh(){
+ const [a,b,c,d]=await Promise.all([
+ db.from('conclave_messages').select('*').order('created_at'),
+ db.from('conclave_game_state').select('*').eq('id',1).maybeSingle(),
+ db.from('conclave_members').select('display_name').order('joined_at'),
+ db.from('conclave_votes').select('*')
+ ]);
+ if(a.data){render(a.data,'messages');if(!$('presentation').classList.contains('hidden'))render(a.data,'archive')}
+ if(b.data){phase=b.data.phase;nightNo=b.data.night_number;$('phase').textContent='Фаза: '+(phase==='night'?'НОЩ №'+nightNo:'ДЕН')}
+ if(c.data)$('target').innerHTML=[...new Set(c.data.map(x=>x.display_name))].filter(x=>x!==name).map(x=>`<option>${esc(x)}</option>`).join('');
+ toggle('voting',phase==='night'&&!host);$('voteStatus').textContent=phase==='night'?'Нощното гласуване е активно.':'Гласуването не е активно.';
+ if(host&&d.data){let v=d.data.filter(x=>x.night_number===nightNo),counts={};v.forEach(x=>counts[x.target_name]=(counts[x.target_name]||0)+1);$('results').textContent=v.length?Object.entries(counts).map(([n,c])=>n+' — '+c).join(' • '):'Няма гласове.'}
+}
+function render(rows,id){$(id).innerHTML=rows.map(x=>`<div class="msg"><div class="meta"><b>${esc(x.sender_name)}</b><span>${time(x.created_at)}</span></div><div>${esc(x.message)}</div></div>`).join('');$(id).scrollTop=$(id).scrollHeight}
+$('enter').onclick=enter;
+$('send').onclick=async()=>{let message=$('message').value.trim();if(!message)return;let r=await db.from('conclave_messages').insert({sender_name:name,message});if(r.error)alert('Грешка при изпращане.');else{$('message').value='';refresh()}};
+$('cast').onclick=async()=>{let r=await db.from('conclave_votes').upsert({night_number:nightNo,voter_name:name,target_name:$('target').value},{onConflict:'night_number,voter_name'});if(r.error)alert('Гласът не се записа: '+r.error.message);else refresh()};
+$('night').onclick=async()=>{let r=await db.from('conclave_game_state').update({phase:'night',night_number:nightNo+1}).eq('id',1);if(r.error)alert(r.error.message);refresh()};
+$('day').onclick=async()=>{let r=await db.from('conclave_game_state').update({phase:'day'}).eq('id',1);if(r.error)alert(r.error.message);refresh()};
+$('showArchive').onclick=()=>{toggle('app',false);toggle('presentation',true);refresh()};
+$('back').onclick=()=>{toggle('presentation',false);toggle('app',true)};
+</script>
